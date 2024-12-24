@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"sync"
 	"testing"
@@ -90,7 +92,14 @@ func (rt *rtHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		Token      string `json:"token"`
 		ExpiryTime int64  `json:"expiryTime"`
-	}{Token: fmt.Sprintf("RT%d", rt.count), ExpiryTime: time.Now().Add(rt.expiry).Unix()}
+	}{}
+	// "X-Forwarded-For" header is automatically added if the request goes through a reverse proxy
+	if r.Header.Get("X-Forwarded-For") == "" {
+		out.Token = fmt.Sprintf("RT%d", rt.count)
+	} else {
+		out.Token = fmt.Sprintf("RT%d-%s", rt.count, r.Header.Get("X-Forwarded-For"))
+	}
+	out.ExpiryTime = time.Now().Add(rt.expiry).Unix()
 	b, _ := json.Marshal(&out)
 	w.Write(b)
 }
@@ -134,6 +143,36 @@ func TestRoleToken(t *testing.T) {
 		t.Fatal("error getting role token", err)
 	}
 	if tok != "RT2" {
+		t.Error("invalid role token", tok)
+	}
+}
+
+func TestRoleTokenWithProxy(t *testing.T) {
+	s := httptest.NewServer(&rtHandler{expiry: 1 * time.Minute})
+	defer s.Close()
+
+	sURL, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatal("failed to parse zts url", err)
+	}
+
+	p := httptest.NewServer(httputil.NewSingleHostReverseProxy(sURL))
+	defer p.Close()
+
+	tp := &tokp{}
+	e := 1 * time.Minute
+	rt := NewRoleToken(tp, "my.domain", RoleTokenOptions{
+		BaseZTSURL: s.URL,
+		ProxyURL:   p.URL,
+		MinExpire:  e,
+		MaxExpire:  e,
+	})
+
+	tok, err := rt.RoleTokenValue()
+	if err != nil {
+		t.Fatal("error getting role token", err)
+	}
+	if tok != "RT1-127.0.0.1" {
 		t.Error("invalid role token", tok)
 	}
 }
@@ -193,6 +232,57 @@ func TestRoleTokenFromCert(t *testing.T) {
 		t.Fatal("error getting role token", err)
 	}
 	if tok != "RT2" {
+		t.Error("invalid role token", tok)
+	}
+
+	// Clean up
+	err = os.RemoveAll(certDir)
+	if err != nil {
+		t.Fatalf("Unable to remove: %q, error: %v", certDir, err)
+	}
+}
+
+func TestRoleTokenFromCertWithProxy(t *testing.T) {
+	s := httptest.NewTLSServer(&rtHandler{expiry: 3 * time.Second})
+	defer s.Close()
+
+	sURL, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatal("failed to parse zts url", err)
+	}
+
+	p := httptest.NewServer(httputil.NewSingleHostReverseProxy(sURL))
+	defer p.Close()
+
+	certDir := fmt.Sprintf("/tmp/certdir2.%d", time.Now().Unix())
+	if _, err := os.Stat(certDir); os.IsNotExist(err) {
+		err := os.MkdirAll(certDir, 0755)
+		require.Nil(t, err, "Should be able to create certDir")
+	}
+
+	certFile := fmt.Sprintf("%s/cert.pem", certDir)
+	keyFile := fmt.Sprintf("%s/key.pem", certDir)
+
+	err = os.WriteFile(certFile, clientCert, 0444)
+	require.Nil(t, err, "Should be able to write cert to disk")
+
+	err = os.WriteFile(keyFile, clientKey, 0400)
+	require.Nil(t, err, "Should be able to write key to disk")
+
+	e := 1 * time.Minute
+	rt := NewRoleTokenFromCert(certFile, keyFile, "my.domain", RoleTokenOptions{
+		BaseZTSURL: s.URL,
+		ProxyURL:   p.URL,
+		MinExpire:  e,
+		MaxExpire:  e,
+		CACert:     LocalhostCert,
+	})
+
+	tok, err := rt.RoleTokenValue()
+	if err != nil {
+		t.Fatal("error getting role token", err)
+	}
+	if tok != "RT1-127.0.0.1" {
 		t.Error("invalid role token", tok)
 	}
 
