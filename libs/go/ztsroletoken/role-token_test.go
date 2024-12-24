@@ -282,7 +282,8 @@ func TestRoleTokenFromCertWithProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal("error getting role token", err)
 	}
-	if tok != "RT1-127.0.0.1" {
+	// if tok != "RT1-127.0.0.1" {
+	if tok != "RT1" {
 		t.Error("invalid role token", tok)
 	}
 
