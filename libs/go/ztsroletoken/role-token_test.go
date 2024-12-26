@@ -4,6 +4,8 @@
 package ztsroletoken
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -52,18 +54,24 @@ WYjCE4hWTQzn0xtwrqrT/c337wvX48p4yk31WdXtCUA=
 // httptest.NewTLSServer uses a cert/key committed at net/http/internal
 // Reusing the same cert here, so that we can use it as the RootCA Cert in the client connection
 var LocalhostCert = []byte(`-----BEGIN CERTIFICATE-----
-MIICEzCCAXygAwIBAgIQMIMChMLGrR+QvmQvpwAU6zANBgkqhkiG9w0BAQsFADAS
+MIIDOTCCAiGgAwIBAgIQSRJrEpBGFc7tNb1fb5pKFzANBgkqhkiG9w0BAQsFADAS
 MRAwDgYDVQQKEwdBY21lIENvMCAXDTcwMDEwMTAwMDAwMFoYDzIwODQwMTI5MTYw
-MDAwWjASMRAwDgYDVQQKEwdBY21lIENvMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCB
-iQKBgQDuLnQAI3mDgey3VBzWnB2L39JUU4txjeVE6myuDqkM/uGlfjb9SjY1bIw4
-iA5sBBZzHi3z0h1YV8QPuxEbi4nW91IJm2gsvvZhIrCHS3l6afab4pZBl2+XsDul
-rKBxKKtD1rGxlG4LjncdabFn9gvLZad2bSysqz/qTAUStTvqJQIDAQABo2gwZjAO
-BgNVHQ8BAf8EBAMCAqQwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0TAQH/BAUw
-AwEB/zAuBgNVHREEJzAlggtleGFtcGxlLmNvbYcEfwAAAYcQAAAAAAAAAAAAAAAA
-AAAAATANBgkqhkiG9w0BAQsFAAOBgQCEcetwO59EWk7WiJsG4x8SY+UIAA+flUI9
-tyC4lNhbcF2Idq9greZwbYCqTTTr2XiRNSMLCOjKyI7ukPoPjo16ocHj+P3vZGfs
-h1fIw3cSS2OolhloGw/XM6RWPWtPAlGykKLciQrBru5NAPvCMsb/I1DAceTiotQM
-fblo6RBxUQ==
+MDAwWjASMRAwDgYDVQQKEwdBY21lIENvMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A
+MIIBCgKCAQEA6Gba5tHV1dAKouAaXO3/ebDUU4rvwCUg/CNaJ2PT5xLD4N1Vcb8r
+bFSW2HXKq+MPfVdwIKR/1DczEoAGf/JWQTW7EgzlXrCd3rlajEX2D73faWJekD0U
+aUgz5vtrTXZ90BQL7WvRICd7FlEZ6FPOcPlumiyNmzUqtwGhO+9ad1W5BqJaRI6P
+YfouNkwR6Na4TzSj5BrqUfP0FwDizKSJ0XXmh8g8G9mtwxOSN3Ru1QFc61Xyeluk
+POGKBV/q6RBNklTNe0gI8usUMlYyoC7ytppNMW7X2vodAelSu25jgx2anj9fDVZu
+h7AXF5+4nJS4AAt0n1lNY7nGSsdZas8PbQIDAQABo4GIMIGFMA4GA1UdDwEB/wQE
+AwICpDATBgNVHSUEDDAKBggrBgEFBQcDATAPBgNVHRMBAf8EBTADAQH/MB0GA1Ud
+DgQWBBStsdjh3/JCXXYlQryOrL4Sh7BW5TAuBgNVHREEJzAlggtleGFtcGxlLmNv
+bYcEfwAAAYcQAAAAAAAAAAAAAAAAAAAAATANBgkqhkiG9w0BAQsFAAOCAQEAxWGI
+5NhpF3nwwy/4yB4i/CwwSpLrWUa70NyhvprUBC50PxiXav1TeDzwzLx/o5HyNwsv
+cxv3HdkLW59i/0SlJSrNnWdfZ19oTcS+6PtLoVyISgtyN6DpkKpdG1cOkW3Cy2P2
++tK/tKHRP1Y/Ra0RiDpOAmqn0gCOFGz8+lqDIor/T7MTpibL3IxqWfPrvfVRHL3B
+grw/ZQTTIVjjh4JBSW3WyWgNo/ikC1lrVxzl4iPUGptxT36Cr7Zk2Bsg0XqwbOvK
+5d+NTDREkSnUbie4GeutujmX3Dsx88UiV6UY/4lHJa6I5leHUNOHahRbpbWeOfs/
+WkBKOclmOV2xlTVuPw==
 -----END CERTIFICATE-----`)
 
 type tokp struct {
@@ -243,7 +251,7 @@ func TestRoleTokenFromCert(t *testing.T) {
 }
 
 func TestRoleTokenFromCertWithProxy(t *testing.T) {
-	s := httptest.NewTLSServer(&rtHandler{expiry: 3 * time.Second})
+	s := httptest.NewTLSServer(&rtHandler{expiry: 1 * time.Minute})
 	defer s.Close()
 
 	sURL, err := url.Parse(s.URL)
@@ -251,7 +259,18 @@ func TestRoleTokenFromCertWithProxy(t *testing.T) {
 		t.Fatal("failed to parse zts url", err)
 	}
 
-	p := httptest.NewServer(httputil.NewSingleHostReverseProxy(sURL))
+	rp := httputil.NewSingleHostReverseProxy(sURL)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(LocalhostCert) {
+		t.Fatal("failed to append root ca cert")
+	}
+	rp.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs: pool,
+		},
+	}
+
+	p := httptest.NewServer(rp)
 	defer p.Close()
 
 	certDir := fmt.Sprintf("/tmp/certdir2.%d", time.Now().Unix())
